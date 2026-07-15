@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and package (Apple Silicon)
+    runs-on: macos-15
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run tests
+        run: make test
+
+      - name: Build application archive
+        run: make package
+
+      - name: Upload application archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-Dashboard-macOS-arm64
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+            artifacts/build-metadata.json
+          if-no-files-found: error
+          retention-days: 14
+

@@ -1,0 +1,71 @@
+name: Mirror Hermes release
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-hermes-release
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Publish compatibility build for latest Hermes
+    runs-on: macos-15
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve latest upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          upstream_tag="$(./scripts/latest-hermes-release.sh)"
+          release_tag="hermes-${upstream_tag}"
+          echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether compatibility release already exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests
+        if: steps.existing.outputs.exists != 'true'
+        run: make test
+
+      - name: Build compatibility archive
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          UPSTREAM_RELEASE: ${{ steps.upstream.outputs.upstream_tag }}
+        run: make package
+
+      - name: Publish compatibility release
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            artifacts/*.zip \
+            artifacts/*.sha256 \
+            artifacts/build-metadata.json \
+            --target main \
+            --title "Hermes Dashboard for $UPSTREAM_TAG" \
+            --notes "Compatibility build of the native dashboard client labeled for NousResearch/hermes-agent $UPSTREAM_TAG. The Hermes source is not embedded or patched."
+

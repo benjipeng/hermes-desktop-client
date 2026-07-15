@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a problem in the native macOS dashboard client
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use the upstream Hermes repository for gateway, dashboard-server, authentication, or agent-runtime bugs.
+  - type: input
+    id: version
+    attributes:
+      label: Client version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: macOS 15.5
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Do not include cookies, tokens, private URLs, or conversation content.
+

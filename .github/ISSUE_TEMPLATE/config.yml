@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Hermes Agent support
+    url: https://github.com/NousResearch/hermes-agent/issues
+    about: Report gateway, dashboard-server, authentication, and agent-runtime issues upstream.
+

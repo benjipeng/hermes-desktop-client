@@ -1,0 +1,10 @@
+Hermes Dashboard for macOS is maintained by Benji Peng (@benjipeng).
+
+Hermes Agent is an independent upstream project by Nous Research:
+https://github.com/NousResearch/hermes-agent
+
+This repository does not redistribute or modify the Hermes Agent source code.
+It provides a native macOS WebKit window for a dashboard served by an existing
+Hermes installation. Hermes and related upstream marks remain the property of
+their respective owners.
+
