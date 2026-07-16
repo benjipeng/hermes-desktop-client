@@ -30,7 +30,7 @@ jobs:
         run: make package
 
       - name: Upload application archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Hermes-Dashboard-macOS-arm64
           path: |
