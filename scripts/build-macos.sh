@@ -31,21 +31,14 @@ fi
 npm run build --workspace apps/desktop
 
 export CSC_IDENTITY_AUTO_DISCOVERY=false
-npm run builder --workspace apps/desktop -- --mac --arm64 --dir
+npm run builder --workspace apps/desktop -- --mac --arm64 --dir -c.mac.identity=-
 
 app_bundle=$(find apps/desktop/release -maxdepth 3 -type d -name 'Hermes.app' -print -quit)
 [[ -n "$app_bundle" ]] || { echo "electron-builder did not produce Hermes.app" >&2; exit 1; }
 
-# Ad-hoc signing keeps the bundle internally consistent. Official Developer ID
-# signing/notarization can be added later through repository secrets without
-# changing the source or packaging architecture.
-codesign \
-  --force \
-  --deep \
-  --sign - \
-  --timestamp=none \
-  --entitlements apps/desktop/electron/entitlements.mac.plist \
-  "$app_bundle"
+# electron-builder signs the nested Electron frameworks and helpers in the
+# correct order using the explicit ad-hoc identity above. Official Developer
+# ID signing/notarization can later replace that identity through secrets.
 "$repo_root/scripts/verify-app.sh" "$source_dir" "$app_bundle"
 
 zip_path="$output_dir/Hermes-${artifact_label}-mac-arm64.zip"
