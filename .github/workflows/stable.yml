@@ -1,0 +1,109 @@
+name: Publish stable Hermes client
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Official Hermes release tag; blank selects the latest release
+        required: false
+        default: ''
+      force:
+        description: Rebuild and replace an existing client release
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.resolve.outputs.build }}
+      client_tag: ${{ steps.resolve.outputs.client_tag }}
+      upstream_ref: ${{ steps.resolve.outputs.upstream_ref }}
+    steps:
+      - name: Resolve official release
+        id: resolve
+        env:
+          FORCE_BUILD: ${{ inputs.force || false }}
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_REF: ${{ inputs.upstream_ref || '' }}
+        run: |
+          set -euo pipefail
+          upstream_ref=${REQUESTED_REF:-}
+          if [[ -z "$upstream_ref" ]]; then
+            upstream_ref=$(gh api repos/NousResearch/hermes-agent/releases/latest --jq .tag_name)
+          fi
+
+          client_tag="hermes-${upstream_ref}"
+          build=true
+          if [[ "$FORCE_BUILD" != "true" ]] && gh release view "$client_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            build=false
+          fi
+
+          echo "upstream_ref=$upstream_ref" >> "$GITHUB_OUTPUT"
+          echo "client_tag=$client_tag" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  build-and-release:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Prepare exact release source
+        id: source
+        run: ./scripts/prepare-source.sh '${{ needs.resolve.outputs.upstream_ref }}' "$RUNNER_TEMP/hermes-agent"
+      - name: Build and verify Hermes.app
+        run: >-
+          ./scripts/build-macos.sh "$RUNNER_TEMP/hermes-agent" "$RUNNER_TEMP/dist"
+          '${{ needs.resolve.outputs.upstream_ref }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Hermes-${{ needs.resolve.outputs.upstream_ref }}-mac-arm64
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish GitHub release
+        env:
+          CLIENT_TAG: ${{ needs.resolve.outputs.client_tag }}
+          FORCE_BUILD: ${{ inputs.force || false }}
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_COMMIT: ${{ steps.source.outputs.upstream_commit }}
+          UPSTREAM_REF: ${{ needs.resolve.outputs.upstream_ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$FORCE_BUILD" == "true" ]]; then
+            gh release delete "$CLIENT_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          fi
+
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Apple Silicon build of the actual Hermes Electron desktop interface for official upstream release [${UPSTREAM_REF}](https://github.com/NousResearch/hermes-agent/releases/tag/${UPSTREAM_REF}).
+
+          - Uses the exact official release source at commit \`${UPSTREAM_COMMIT}\`.
+          - Connects to a separately managed Hermes gateway; default: \`http://127.0.0.1:9119\`.
+          - Supports gateway sign-in and session-token authentication.
+          - Does not bundle, install, or launch the Hermes Python backend.
+
+          Verify downloads with \`SHA256SUMS.txt\`.
+
+          This is an unofficial client build. Hermes is developed by Nous Research.
+          EOF
+
+          gh release create "$CLIENT_TAG" "$RUNNER_TEMP"/dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Hermes Desktop Client for ${UPSTREAM_REF}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"

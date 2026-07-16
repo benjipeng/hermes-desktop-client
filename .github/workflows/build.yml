@@ -1,0 +1,45 @@
+name: Build macOS client
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Official Hermes branch, tag, or commit
+        required: true
+        default: main
+      artifact_label:
+        description: Optional filename label
+        required: false
+        default: manual
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Prepare exact upstream source
+        id: source
+        run: ./scripts/prepare-source.sh '${{ inputs.upstream_ref }}' "$RUNNER_TEMP/hermes-agent"
+      - name: Build and verify Hermes.app
+        run: ./scripts/build-macos.sh "$RUNNER_TEMP/hermes-agent" "$RUNNER_TEMP/dist" '${{ inputs.artifact_label }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Hermes-${{ inputs.artifact_label }}-mac-arm64
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build summary
+        run: |
+          {
+            echo '### Hermes desktop client build'
+            echo '- Upstream ref: `${{ steps.source.outputs.upstream_ref }}`'
+            echo '- Upstream commit: `${{ steps.source.outputs.upstream_commit }}`'
+            echo '- Desktop source layout: `${{ steps.source.outputs.patch_kind }}`'
+            echo '- Architecture: `arm64`'
+          } >> "$GITHUB_STEP_SUMMARY"

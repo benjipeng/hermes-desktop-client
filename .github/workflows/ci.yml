@@ -1,0 +1,22 @@
+name: Validate client delta
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  patches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Verify current and stable source preparation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/check-patches.sh

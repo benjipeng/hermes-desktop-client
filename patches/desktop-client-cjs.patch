@@ -1,0 +1,492 @@
+diff --git a/apps/desktop/electron/desktop-mode.cjs b/apps/desktop/electron/desktop-mode.cjs
+new file mode 100644
+index 0000000..72e50d1
+--- /dev/null
++++ b/apps/desktop/electron/desktop-mode.cjs
+@@ -0,0 +1,19 @@
++'use strict'
++
++const DEFAULT_REMOTE_CLIENT_URL = 'http://127.0.0.1:9119'
++const DEFAULT_REMOTE_CLIENT_AUTH_MODE = 'oauth'
++
++// This source tree is used only to package the dedicated desktop client. The
++// upstream Hermes renderer stays intact, while the Python backend is supplied
++// by a separately managed gateway.
++const DESKTOP_MODE = Object.freeze({
++  defaultAuthMode: DEFAULT_REMOTE_CLIENT_AUTH_MODE,
++  defaultRemoteUrl: DEFAULT_REMOTE_CLIENT_URL,
++  remoteOnly: true
++})
++
++module.exports = {
++  DEFAULT_REMOTE_CLIENT_AUTH_MODE,
++  DEFAULT_REMOTE_CLIENT_URL,
++  DESKTOP_MODE
++}
+diff --git a/apps/desktop/electron/desktop-mode.test.cjs b/apps/desktop/electron/desktop-mode.test.cjs
+new file mode 100644
+index 0000000..31fa9e9
+--- /dev/null
++++ b/apps/desktop/electron/desktop-mode.test.cjs
+@@ -0,0 +1,19 @@
++'use strict'
++
++const test = require('node:test')
++const assert = require('node:assert/strict')
++
++const {
++  DEFAULT_REMOTE_CLIENT_AUTH_MODE,
++  DEFAULT_REMOTE_CLIENT_URL,
++  DESKTOP_MODE
++} = require('./desktop-mode.cjs')
++
++test('desktop mode is an immutable remote-only client', () => {
++  assert.deepEqual(DESKTOP_MODE, {
++    defaultAuthMode: DEFAULT_REMOTE_CLIENT_AUTH_MODE,
++    defaultRemoteUrl: DEFAULT_REMOTE_CLIENT_URL,
++    remoteOnly: true
++  })
++  assert.equal(Object.isFrozen(DESKTOP_MODE), true)
++})
+diff --git a/apps/desktop/electron/main.cjs b/apps/desktop/electron/main.cjs
+index 69d5d5f..85982ee 100644
+--- a/apps/desktop/electron/main.cjs
++++ b/apps/desktop/electron/main.cjs
+@@ -118,6 +118,7 @@ const {
+   resolveTestWsUrl,
+   tokenPreview
+ } = require('./connection-config.cjs')
++const { DESKTOP_MODE } = require('./desktop-mode.cjs')
+ const {
+   DATA_URL_READ_MAX_BYTES,
+   DEFAULT_FETCH_TIMEOUT_MS,
+@@ -382,10 +383,19 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+ // tracks main. User can also override at runtime via
+ // hermesDesktop.updates.setBranch().
+ const DEFAULT_UPDATE_BRANCH = 'main'
++
++if (DESKTOP_MODE.remoteOnly) {
++  console.log(
++    `[hermes] remote-only desktop mode enabled: ${DESKTOP_MODE.defaultRemoteUrl} (${DESKTOP_MODE.defaultAuthMode})`
++  )
++}
++
+ // desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
+ // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
+ // directory per user, regardless of which UI surface produced the line.
+-const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
++const DESKTOP_LOG_PATH = DESKTOP_MODE.remoteOnly
++  ? path.join(app.getPath('userData'), 'logs', 'desktop.log')
++  : path.join(HERMES_HOME, 'logs', 'desktop.log')
+ const DESKTOP_LOG_FLUSH_MS = 120
+ const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
+ // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
+@@ -4770,6 +4780,7 @@ function readDesktopConnectionConfig() {
+     // Missing or malformed connection settings should fall back to local.
+   }
+ 
++  config = withRemoteOnlyConnectionDefaults(config)
+   connectionConfigCache = config
+   connectionConfigCacheMtime = mtime
+ 
+@@ -4783,6 +4794,39 @@ function writeDesktopConnectionConfig(config) {
+   connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
+ }
+ 
++function remoteOnlyLocalGatewayError() {
++  return new Error(
++    `This Hermes desktop build is remote-only and cannot start a bundled local gateway. ` +
++      `Sign in to the configured gateway at ${DESKTOP_MODE.defaultRemoteUrl}.`
++  )
++}
++
++function remoteOnlyRemoteBlock(block = {}) {
++  const raw = block && typeof block === 'object' ? block : {}
++  const url = String(raw.url || DESKTOP_MODE.defaultRemoteUrl).trim() || DESKTOP_MODE.defaultRemoteUrl
++  const savedAuthMode = raw.authMode ? normAuthMode(raw.authMode) : null
++  const authMode =
++    savedAuthMode === 'token' && !raw.token
++      ? DESKTOP_MODE.defaultAuthMode
++      : savedAuthMode || DESKTOP_MODE.defaultAuthMode
++
++  return { ...raw, url, authMode }
++}
++
++function withRemoteOnlyConnectionDefaults(config) {
++  if (!DESKTOP_MODE.remoteOnly) {
++    return config
++  }
++
++  const current = config && typeof config === 'object' ? config : {}
++
++  return {
++    mode: 'remote',
++    remote: remoteOnlyRemoteBlock(current.remote),
++    profiles: current.profiles || {}
++  }
++}
++
+ // Returns the desktop's chosen profile name, or null when unset. "default" is
+ // a valid stored value (pins the root HERMES_HOME explicitly); null means "no
+ // preference" and preserves the legacy launch (no --profile flag).
+@@ -4820,16 +4864,27 @@ function writeActiveDesktopProfile(name) {
+ // behavior); with a `profile` it describes that profile's per-profile remote
+ // override (or an empty "local/inherit" view when the profile has none).
+ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig(), profile = null) {
++  config = withRemoteOnlyConnectionDefaults(config)
+   const key = connectionScopeKey(profile)
+   const scoped = key ? config.profiles?.[key] || null : null
+-  const block = key ? scoped || {} : config.remote || {}
++  const block = key ? scoped || (DESKTOP_MODE.remoteOnly ? config.remote || {} : {}) : config.remote || {}
+ 
+   const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+ 
+   const remoteToken = decryptDesktopSecret(block.token)
+-  const authMode = normAuthMode(block.authMode)
+-  const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
+-  const mode = envOverride || (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
++  const authMode = block.authMode
++    ? normAuthMode(block.authMode)
++    : DESKTOP_MODE.remoteOnly
++      ? DESKTOP_MODE.defaultAuthMode
++      : normAuthMode(block.authMode)
++  const remoteUrl = envOverride
++    ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '')
++    : String(block.url || (DESKTOP_MODE.remoteOnly ? DESKTOP_MODE.defaultRemoteUrl : ''))
++  const mode = DESKTOP_MODE.remoteOnly
++    ? 'remote'
++    : envOverride || (key ? scoped?.mode : config.mode) === 'remote'
++      ? 'remote'
++      : 'local'
+ 
+   let remoteOauthConnected = false
+   if (authMode === 'oauth' && remoteUrl) {
+@@ -4853,6 +4908,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
+     remoteUrl,
+     remoteTokenPreview: tokenPreview(remoteToken),
+     remoteTokenSet: Boolean(remoteToken),
++    remoteOnly: DESKTOP_MODE.remoteOnly,
+     // The env override only forces the global/primary connection; a per-profile
+     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
+     envOverride
+@@ -4872,13 +4928,24 @@ function buildRemoteBlock(remoteUrl, authMode, token) {
+ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnectionConfig(), options = {}) {
+   const persistToken = options.persistToken !== false
+   const key = connectionScopeKey(input.profile)
+-  const mode = input.mode === 'remote' ? 'remote' : 'local'
++  existing = withRemoteOnlyConnectionDefaults(existing)
++
++  if (DESKTOP_MODE.remoteOnly && input.mode === 'local') {
++    throw remoteOnlyLocalGatewayError()
++  }
++
++  const mode = input.mode === 'remote' || DESKTOP_MODE.remoteOnly ? 'remote' : 'local'
+ 
+   // The block being edited: a per-profile entry or the global remote block.
+   const existingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
+-  const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
++  const remoteUrl = String(
++    input.remoteUrl ?? existingBlock.url ?? (DESKTOP_MODE.remoteOnly ? DESKTOP_MODE.defaultRemoteUrl : '')
++  ).trim()
+   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
+-  const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
++  const authMode = resolveAuthMode(
++    input.remoteAuthMode,
++    existingBlock.authMode || (DESKTOP_MODE.remoteOnly ? DESKTOP_MODE.defaultAuthMode : undefined)
++  )
+   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
+   const nextToken = incomingToken
+     ? persistToken
+@@ -4981,7 +5048,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
+ // A null/empty profile resolves the env/global remote, so legacy callers and
+ // the connection test (which pass no profile) are unchanged.
+ async function resolveRemoteBackend(profile) {
+-  const config = readDesktopConnectionConfig()
++  const config = withRemoteOnlyConnectionDefaults(readDesktopConnectionConfig())
+ 
+   // 1. Per-profile override — "a profile with its own remote host". Wins even
+   //    over the env override so an explicitly-configured profile always
+@@ -4996,6 +5063,10 @@ async function resolveRemoteBackend(profile) {
+   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
+   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
+   if (rawEnvUrl) {
++    if (DESKTOP_MODE.remoteOnly && !rawEnvToken) {
++      return buildRemoteConnection(rawEnvUrl, DESKTOP_MODE.defaultAuthMode, null, 'env')
++    }
++
+     if (!rawEnvToken) {
+       throw new Error(
+         'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
+@@ -5031,6 +5102,10 @@ function configuredRemoteProfileNames() {
+ // Remote, or the env override): a SINGLE remote backend serves every profile via
+ // ?profile=. Distinct from per-profile overrides — here there's one host for all.
+ function globalRemoteActive() {
++  if (DESKTOP_MODE.remoteOnly) {
++    return true
++  }
++
+   if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+     return true
+   }
+@@ -5352,6 +5427,10 @@ async function spawnPoolBackend(profile, entry) {
+     }
+   }
+ 
++  if (DESKTOP_MODE.remoteOnly) {
++    throw remoteOnlyLocalGatewayError()
++  }
++
+   const token = crypto.randomBytes(32).toString('base64url')
+   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
+   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
+@@ -5558,6 +5637,10 @@ async function startHermes() {
+       }
+     }
+ 
++    if (DESKTOP_MODE.remoteOnly) {
++      throw remoteOnlyLocalGatewayError()
++    }
++
+     // Mutual exclusion with an in-app update (#50238). If this instance was
+     // relaunched while the Tauri updater is still applying an update, spawning
+     // a local backend now re-locks the venv shim and gets killed by the
+@@ -6314,6 +6397,10 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
+   return { ok: true }
+ })
+ ipcMain.handle('hermes:bootstrap:repair', async () => {
++  if (DESKTOP_MODE.remoteOnly) {
++    throw remoteOnlyLocalGatewayError()
++  }
++
+   // Forceful repair: drop the bootstrap-complete marker so the next
+   // startHermes() re-runs the full installer (refreshing a broken/partial
+   // venv), and clear any latched failure + live connection. The renderer
+diff --git a/apps/desktop/src/app/settings/gateway-settings.tsx b/apps/desktop/src/app/settings/gateway-settings.tsx
+index aae1c75..4906f77 100644
+--- a/apps/desktop/src/app/settings/gateway-settings.tsx
++++ b/apps/desktop/src/app/settings/gateway-settings.tsx
+@@ -20,6 +20,7 @@ type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
+ interface GatewaySettingsState {
+   envOverride: boolean
+   mode: Mode
++  remoteOnly: boolean
+   remoteAuthMode: AuthMode
+   remoteOauthConnected: boolean
+   remoteTokenPreview: string | null
+@@ -30,6 +31,7 @@ interface GatewaySettingsState {
+ const EMPTY_STATE: GatewaySettingsState = {
+   envOverride: false,
+   mode: 'local',
++  remoteOnly: false,
+   remoteAuthMode: 'token',
+   remoteOauthConnected: false,
+   remoteTokenPreview: null,
+@@ -281,7 +283,7 @@ export function GatewaySettings() {
+   }, [authMode, oauthConnected, remoteToken, state.remoteTokenSet, trimmedUrl])
+ 
+   const payload = () => ({
+-    mode: state.mode,
++    mode: state.remoteOnly && state.mode === 'local' ? 'remote' : state.mode,
+     profile: scope ?? undefined,
+     remoteAuthMode: authMode,
+     remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
+@@ -336,7 +338,7 @@ export function GatewaySettings() {
+       // Save (don't apply/restart) so the login window has a URL to use and the
+       // oauth mode is persisted, without yet flipping the live connection.
+       const saved = await window.hermesDesktop.saveConnectionConfig({
+-        mode: state.mode,
++        mode: state.remoteOnly && state.mode === 'local' ? 'remote' : state.mode,
+         profile: scope ?? undefined,
+         remoteAuthMode: 'oauth',
+         remoteUrl: trimmedUrl
+@@ -465,15 +467,17 @@ export function GatewaySettings() {
+         </div>
+       ) : null}
+ 
+-      <div className="grid gap-3 sm:grid-cols-2">
+-        <ModeCard
+-          active={state.mode === 'local'}
+-          description={g.localDesc}
+-          disabled={state.envOverride}
+-          icon={Monitor}
+-          onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
+-          title={g.localTitle}
+-        />
++      <div className={cn('grid gap-3', state.remoteOnly ? '' : 'sm:grid-cols-2')}>
++        {!state.remoteOnly ? (
++          <ModeCard
++            active={state.mode === 'local'}
++            description={g.localDesc}
++            disabled={state.envOverride}
++            icon={Monitor}
++            onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
++            title={g.localTitle}
++          />
++        ) : null}
+         <ModeCard
+           active={state.mode === 'remote'}
+           description={g.remoteDesc}
+diff --git a/apps/desktop/src/components/boot-failure-overlay.tsx b/apps/desktop/src/components/boot-failure-overlay.tsx
+index bb17f79..0a9f1eb 100644
+--- a/apps/desktop/src/components/boot-failure-overlay.tsx
++++ b/apps/desktop/src/components/boot-failure-overlay.tsx
+@@ -35,6 +35,7 @@ export function BootFailureOverlay() {
+   const [logs, setLogs] = useState<string[]>([])
+   const [showLogs, setShowLogs] = useState(false)
+   const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
++  const [remoteOnly, setRemoteOnly] = useState(false)
+ 
+   const visible = Boolean(boot.error) && !boot.running
+   // While first-run onboarding owns the picker/flow we let it surface its own
+@@ -80,6 +81,10 @@ export function BootFailureOverlay() {
+         return
+       }
+ 
++      if (!cancelled) {
++        setRemoteOnly(Boolean(config.remoteOnly))
++      }
++
+       if (cancelled || !isRemoteReauthFailure(config)) {
+         return
+       }
+@@ -205,22 +210,26 @@ export function BootFailureOverlay() {
+                   {copy.retry}
+                 </Button>
+               )}
+-              {!remoteReauth ? (
++              {!remoteReauth && !remoteOnly ? (
+                 <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="secondary">
+                   {busy === 'repair' ? <Loader2 className="animate-spin" /> : <Wrench />}
+                   {copy.repairInstall}
+                 </Button>
+               ) : null}
+-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="secondary">
+-                {busy === 'local' ? <Loader2 className="animate-spin" /> : null}
+-                {copy.useLocalGateway}
+-              </Button>
++              {!remoteOnly ? (
++                <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="secondary">
++                  {busy === 'local' ? <Loader2 className="animate-spin" /> : null}
++                  {copy.useLocalGateway}
++                </Button>
++              ) : null}
+               <Button onClick={openLogs} variant="ghost">
+                 <FileText />
+                 {copy.openLogs}
+               </Button>
+             </div>
+-            <p className="text-xs text-muted-foreground">{remoteReauth ? copy.remoteSignInHint : copy.repairHint}</p>
++            <p className="text-xs text-muted-foreground">
++              {remoteOnly ? copy.remoteOnlyHint : remoteReauth ? copy.remoteSignInHint : copy.repairHint}
++            </p>
+           </div>
+ 
+           {logs.length > 0 ? (
+diff --git a/apps/desktop/src/components/boot-failure-reauth.test.ts b/apps/desktop/src/components/boot-failure-reauth.test.ts
+index 613b43f..3c6ec9c 100644
+--- a/apps/desktop/src/components/boot-failure-reauth.test.ts
++++ b/apps/desktop/src/components/boot-failure-reauth.test.ts
+@@ -8,6 +8,7 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
+   return {
+     envOverride: false,
+     mode: 'remote',
++    remoteOnly: false,
+     profile: null,
+     remoteAuthMode: 'oauth',
+     remoteOauthConnected: false,
+diff --git a/apps/desktop/src/global.d.ts b/apps/desktop/src/global.d.ts
+index f9c5e34..b86c038 100644
+--- a/apps/desktop/src/global.d.ts
++++ b/apps/desktop/src/global.d.ts
+@@ -392,6 +392,7 @@ export interface DesktopActiveProfile {
+ export interface DesktopConnectionConfig {
+   envOverride: boolean
+   mode: 'local' | 'remote'
++  remoteOnly: boolean
+   // The profile this config describes, or null for the global/default
+   // connection. Per-profile entries let a profile point at its own backend.
+   profile: null | string
+diff --git a/apps/desktop/src/i18n/en.ts b/apps/desktop/src/i18n/en.ts
+index cd046f8..6e44188 100644
+--- a/apps/desktop/src/i18n/en.ts
++++ b/apps/desktop/src/i18n/en.ts
+@@ -93,6 +93,7 @@ export const en: Translations = {
+       openLogs: 'Open logs',
+       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
+       remoteSignInHint: 'Opens the gateway login window. Use local gateway to switch to the bundled backend instead.',
++      remoteOnlyHint: 'This build connects only to the configured remote gateway and will not start a local backend.',
+       hideRecentLogs: 'Hide recent logs',
+       showRecentLogs: 'Show recent logs',
+       signedInTitle: 'Signed in',
+diff --git a/apps/desktop/src/i18n/ja.ts b/apps/desktop/src/i18n/ja.ts
+index 22792ea..ba90acf 100644
+--- a/apps/desktop/src/i18n/ja.ts
++++ b/apps/desktop/src/i18n/ja.ts
+@@ -94,6 +94,7 @@ export const ja = defineLocale({
+       repairHint: '修復はインストーラーを再実行します。新しいマシンでは数分かかる場合があります。',
+       remoteSignInHint:
+         'ゲートウェイのログインウィンドウを開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。',
++      remoteOnlyHint: 'このビルドは設定済みのリモートゲートウェイにのみ接続し、ローカルバックエンドは起動しません。',
+       hideRecentLogs: '最近のログを非表示',
+       showRecentLogs: '最近のログを表示',
+       signedInTitle: 'サインインしました',
+diff --git a/apps/desktop/src/i18n/types.ts b/apps/desktop/src/i18n/types.ts
+index b4e41e2..79a5ec5 100644
+--- a/apps/desktop/src/i18n/types.ts
++++ b/apps/desktop/src/i18n/types.ts
+@@ -136,6 +136,7 @@ export interface Translations {
+       openLogs: string
+       repairHint: string
+       remoteSignInHint: string
++      remoteOnlyHint: string
+       hideRecentLogs: string
+       showRecentLogs: string
+       signedInTitle: string
+diff --git a/apps/desktop/src/i18n/zh-hant.ts b/apps/desktop/src/i18n/zh-hant.ts
+index bcfed89..f284a3f 100644
+--- a/apps/desktop/src/i18n/zh-hant.ts
++++ b/apps/desktop/src/i18n/zh-hant.ts
+@@ -91,6 +91,7 @@ export const zhHant = defineLocale({
+       openLogs: '開啟記錄',
+       repairHint: '修復會重新執行安裝程式，在新機器上可能需要幾分鐘。',
+       remoteSignInHint: '開啟閘道登入視窗。使用本機閘道可切換至內建後端。',
++      remoteOnlyHint: '此版本只會連接已設定的遠端閘道，不會啟動本機後端。',
+       hideRecentLogs: '隱藏最近記錄',
+       showRecentLogs: '顯示最近記錄',
+       signedInTitle: '已登入',
+diff --git a/apps/desktop/src/i18n/zh.ts b/apps/desktop/src/i18n/zh.ts
+index 5e688a5..ffa1b86 100644
+--- a/apps/desktop/src/i18n/zh.ts
++++ b/apps/desktop/src/i18n/zh.ts
+@@ -91,6 +91,7 @@ export const zh: Translations = {
+       openLogs: '打开日志',
+       repairHint: '修复会重新运行安装器，在新机器上可能需要几分钟。',
+       remoteSignInHint: '打开网关登录窗口。也可以使用本地网关切换到随应用提供的后端。',
++      remoteOnlyHint: '此版本只连接已配置的远程网关，不会启动本地后端。',
+       hideRecentLogs: '隐藏最近日志',
+       showRecentLogs: '显示最近日志',
+       signedInTitle: '已登录',
+diff --git a/apps/desktop/src/themes/presets.ts b/apps/desktop/src/themes/presets.ts
+index 9cfb880..818e842 100644
+--- a/apps/desktop/src/themes/presets.ts
++++ b/apps/desktop/src/themes/presets.ts
+@@ -64,7 +64,7 @@ export const nousTheme: DesktopTheme = {
+     userBubbleBorder: nousTintTransparent(24)
+   },
+   darkColors: {
+-    background: '#0D2F86',
++    background: '#000000',
+     foreground: PSYCHE_WARM,
+     card: '#12378F',
+     cardForeground: PSYCHE_WARM,
+@@ -85,8 +85,8 @@ export const nousTheme: DesktopTheme = {
+     composerRing: PSYCHE_WARM,
+     destructive: '#C0473A',
+     destructiveForeground: '#FEF2F2',
+-    sidebarBackground: '#09286F',
+-    sidebarBorder: '#234A9C',
++    sidebarBackground: '#000000',
++    sidebarBorder: '#1A1A1A',
+     userBubble: '#143B91',
+     userBubbleBorder: '#3A63BD'
+   },

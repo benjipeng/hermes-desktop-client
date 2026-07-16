@@ -1,0 +1,99 @@
+name: Publish rolling nightly
+
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if upstream main has not changed
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rolling-nightly
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.resolve.outputs.build }}
+      short_sha: ${{ steps.resolve.outputs.short_sha }}
+      upstream_sha: ${{ steps.resolve.outputs.upstream_sha }}
+    steps:
+      - name: Resolve upstream main
+        id: resolve
+        env:
+          FORCE_BUILD: ${{ inputs.force || false }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_sha=$(git ls-remote https://github.com/NousResearch/hermes-agent.git refs/heads/main | awk '{print $1}')
+          short_sha=${upstream_sha:0:12}
+          build=true
+
+          if [[ "$FORCE_BUILD" != "true" ]]; then
+            current_body=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || true)
+            if grep -Fq "upstream_commit=${upstream_sha}" <<<"$current_body"; then
+              build=false
+            fi
+          fi
+
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  build-and-release:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Prepare exact main commit
+        id: source
+        run: ./scripts/prepare-source.sh '${{ needs.resolve.outputs.upstream_sha }}' "$RUNNER_TEMP/hermes-agent"
+      - name: Build and verify Hermes.app
+        run: >-
+          ./scripts/build-macos.sh "$RUNNER_TEMP/hermes-agent" "$RUNNER_TEMP/dist"
+          'nightly-${{ needs.resolve.outputs.short_sha }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Hermes-nightly-${{ needs.resolve.outputs.short_sha }}-mac-arm64
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Replace rolling nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHORT_SHA: ${{ needs.resolve.outputs.short_sha }}
+          UPSTREAM_SHA: ${{ needs.resolve.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+
+          cat > "$RUNNER_TEMP/nightly-notes.md" <<EOF
+          Rolling Apple Silicon build from official Hermes \`main\` commit [\`${UPSTREAM_SHA}\`](https://github.com/NousResearch/hermes-agent/commit/${UPSTREAM_SHA}).
+
+          - Actual Hermes Electron desktop interface, not a dashboard wrapper.
+          - Remote-only: no bundled, installed, or launched Python backend.
+          - Default gateway: \`http://127.0.0.1:9119\`; OAuth/password and token authentication are available in Settings.
+
+          This prerelease is replaced only when upstream \`main\` changes.
+
+          <!-- upstream_commit=${UPSTREAM_SHA} -->
+          EOF
+
+          gh release create nightly "$RUNNER_TEMP"/dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Hermes Desktop Client Nightly (${SHORT_SHA})" \
+            --notes-file "$RUNNER_TEMP/nightly-notes.md" \
+            --prerelease

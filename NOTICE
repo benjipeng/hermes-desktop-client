@@ -1,0 +1,12 @@
+Hermes Desktop Client
+
+This repository contains an unofficial build delta and distribution automation
+for the Hermes desktop interface.
+
+Hermes is developed by Nous Research:
+https://github.com/NousResearch/hermes-agent
+
+The upstream Hermes project is licensed under the MIT License. The application
+name, icons, interface, and other upstream assets remain attributable to their
+respective authors. This repository is maintained independently by Benji Peng
+and is not an official Nous Research distribution.

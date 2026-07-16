@@ -1,0 +1,18 @@
+name: Distribution improvement
+description: Suggest an improvement to packaging, CI, release automation, or remote-only behavior.
+title: "enhancement: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: Problem to solve
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Keep proposals within the client-only distribution scope.
+    validations:
+      required: true

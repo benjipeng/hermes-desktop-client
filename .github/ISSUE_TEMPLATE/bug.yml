@@ -1,0 +1,39 @@
+name: Client build bug
+description: Report a problem specific to the remote-only macOS client build.
+title: "bug: "
+labels: [bug]
+body:
+  - type: input
+    id: release
+    attributes:
+      label: Client release
+      placeholder: hermes-v2026.x.x or nightly commit
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Gateway authentication
+      options:
+        - Gateway sign-in / OAuth / password
+        - Session token
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the expected result, actual result, and reproduction steps.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove credentials and tokens before pasting logs.
